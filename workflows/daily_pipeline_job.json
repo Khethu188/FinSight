@@ -1,0 +1,293 @@
+
+{
+  "name": "fdp-daily-pipeline",
+  "description": "Financial Data Platform — Daily ETL Pipeline (Bronze → Silver → Gold → Quality)",
+  "tags": {
+    "project": "financial-data-platform",
+    "environment": "dev",
+    "owner": "khethukuthula-sabela",
+    "pipeline_type": "daily-etl"
+  },
+  "schedule": {
+    "quartz_cron_expression": "0 0 6 * * ?",
+    "timezone_id": "Africa/Johannesburg",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 7200,
+  "email_notifications": {
+    "on_start": [],
+    "on_success": ["khethukuthula@example.com"],
+    "on_failure": ["khethukuthula@example.com"],
+    "no_alert_for_skipped_runs": true
+  },
+  "webhook_notifications": {},
+  "job_clusters": [
+    {
+      "job_cluster_key": "pipeline_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "m5.xlarge",
+        "driver_node_type_id": "m5.xlarge",
+        "autoscale": {
+          "min_workers": 1,
+          "max_workers": 4
+        },
+        "aws_attributes": {
+          "instance_profile_arn": "arn:aws:iam::ACCOUNT_ID:instance-profile/financial-data-platform-dev-databricks-role",
+          "availability": "SPOT_WITH_FALLBACK",
+          "first_on_demand": 1,
+          "spot_bid_price_percent": 100
+        },
+        "spark_conf": {
+          "spark.databricks.delta.optimizeWrite.enabled": "true",
+          "spark.databricks.delta.autoCompact.enabled": "true",
+          "spark.databricks.delta.schema.autoMerge.enabled": "true",
+          "spark.sql.adaptive.enabled": "true"
+        },
+        "custom_tags": {
+          "Project": "financial-data-platform",
+          "JobType": "daily-pipeline"
+        },
+        "autotermination_minutes": 15,
+        "enable_elastic_disk": true,
+        "data_security_mode": "SINGLE_USER"
+      }
+    },
+    {
+      "job_cluster_key": "gold_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "m5.2xlarge",
+        "driver_node_type_id": "m5.2xlarge",
+        "autoscale": {
+          "min_workers": 2,
+          "max_workers": 6
+        },
+        "aws_attributes": {
+          "availability": "SPOT_WITH_FALLBACK",
+          "first_on_demand": 1
+        },
+        "spark_conf": {
+          "spark.databricks.delta.optimizeWrite.enabled": "true",
+          "spark.sql.adaptive.enabled": "true",
+          "spark.sql.shuffle.partitions": "200"
+        },
+        "custom_tags": {
+          "Project": "financial-data-platform",
+          "JobType": "gold-aggregation"
+        },
+        "autotermination_minutes": 20,
+        "enable_elastic_disk": true,
+        "data_security_mode": "SINGLE_USER"
+      }
+    },
+    {
+      "job_cluster_key": "lightweight_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "m5.large",
+        "num_workers": 1,
+        "aws_attributes": {
+          "availability": "SPOT"
+        },
+        "custom_tags": {
+          "Project": "financial-data-platform",
+          "JobType": "quality-monitoring"
+        },
+        "autotermination_minutes": 10,
+        "enable_elastic_disk": true,
+        "data_security_mode": "SINGLE_USER"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "bronze_ingestion",
+      "description": "Ingest raw CSV files from S3 Landing → Bronze Delta Lake",
+      "job_cluster_key": "pipeline_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/bronze/01_ingest_landing_to_bronze",
+        "base_parameters": {
+          "processing_mode": "streaming"
+        },
+        "source": "GIT"
+      },
+      "timeout_seconds": 1800,
+      "max_retries": 2,
+      "min_retry_interval_millis": 60000,
+      "retry_on_timeout": true
+    },
+    {
+      "task_key": "silver_cleansing",
+      "description": "Cleanse, validate, deduplicate Bronze → Silver",
+      "depends_on": [
+        {"task_key": "bronze_ingestion"}
+      ],
+      "job_cluster_key": "pipeline_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/silver/02_bronze_to_silver_cleanse",
+        "base_parameters": {
+          "process_date": ""
+        },
+        "source": "GIT"
+      },
+      "timeout_seconds": 2400,
+      "max_retries": 1,
+      "min_retry_interval_millis": 120000,
+      "retry_on_timeout": false
+    },
+    {
+      "task_key": "silver_enrichment",
+      "description": "Build customer dimension and enrich Silver data",
+      "depends_on": [
+        {"task_key": "silver_cleansing"}
+      ],
+      "job_cluster_key": "pipeline_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/silver/03_silver_enrichment",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1200,
+      "max_retries": 1
+    },
+    {
+      "task_key": "gold_revenue_summary",
+      "description": "Aggregate monthly revenue metrics",
+      "depends_on": [
+        {"task_key": "silver_enrichment"}
+      ],
+      "job_cluster_key": "gold_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/gold/04_gold_revenue_summary",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1200,
+      "max_retries": 1
+    },
+    {
+      "task_key": "gold_regional_pnl",
+      "description": "Calculate regional profit & loss",
+      "depends_on": [
+        {"task_key": "silver_enrichment"}
+      ],
+      "job_cluster_key": "gold_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/gold/05_gold_regional_pnl",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1200,
+      "max_retries": 1
+    },
+    {
+      "task_key": "gold_product_performance",
+      "description": "Analyze product-level performance metrics",
+      "depends_on": [
+        {"task_key": "silver_enrichment"}
+      ],
+      "job_cluster_key": "gold_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/gold/06_gold_product_performance",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1200,
+      "max_retries": 1
+    },
+    {
+      "task_key": "gold_anomaly_detection",
+      "description": "Detect suspicious transactions and spending anomalies",
+      "depends_on": [
+        {"task_key": "silver_enrichment"}
+      ],
+      "job_cluster_key": "gold_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/gold/07_gold_anomaly_detection",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1800,
+      "max_retries": 1
+    },
+    {
+      "task_key": "quality_monitor",
+      "description": "Run comprehensive data quality checks across all layers",
+      "depends_on": [
+        {"task_key": "gold_revenue_summary"},
+        {"task_key": "gold_regional_pnl"},
+        {"task_key": "gold_product_performance"},
+        {"task_key": "gold_anomaly_detection"}
+      ],
+      "job_cluster_key": "lightweight_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/quality/08_data_quality_monitor",
+        "source": "GIT"
+      },
+      "timeout_seconds": 900,
+      "max_retries": 1
+    },
+    {
+      "task_key": "quality_metrics_store",
+      "description": "Aggregate historical quality trends",
+      "depends_on": [
+        {"task_key": "quality_monitor"}
+      ],
+      "job_cluster_key": "lightweight_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/quality/09_quality_metrics_store",
+        "source": "GIT"
+      },
+      "timeout_seconds": 600,
+      "max_retries": 1
+    },
+    {
+      "task_key": "pipeline_lineage",
+      "description": "Track end-to-end pipeline execution metrics",
+      "depends_on": [
+        {"task_key": "quality_monitor"}
+      ],
+      "job_cluster_key": "lightweight_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/observability/11_pipeline_lineage_tracker",
+        "source": "GIT"
+      },
+      "timeout_seconds": 600,
+      "max_retries": 1
+    },
+    {
+      "task_key": "alerting",
+      "description": "Send SNS/CloudWatch alerts if quality issues detected",
+      "depends_on": [
+        {"task_key": "quality_metrics_store"},
+        {"task_key": "pipeline_lineage"}
+      ],
+      "job_cluster_key": "lightweight_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/observability/12_alerting_framework",
+        "source": "GIT"
+      },
+      "timeout_seconds": 300,
+      "max_retries": 2,
+      "min_retry_interval_millis": 30000
+    }
+  ],
+  "run_as": {
+    "user_name": "khethukuthula@example.com"
+  },
+  "queue": {
+    "enabled": true
+  },
+  "parameters": [
+    {
+      "name": "environment",
+      "default": "dev"
+    },
+    {
+      "name": "process_date",
+      "default": ""
+    },
+    {
+      "name": "run_id",
+      "default": ""
+    }
+  ]
+}
+

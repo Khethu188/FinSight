@@ -1,0 +1,313 @@
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CD Pipeline — Financial Data Platform
+# ═══════════════════════════════════════════════════════════════════════════
+# Triggers: Push to main (after PR merge)
+# Steps: Terraform Apply, Databricks Sync, Workflow Deploy, Smoke Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: CD — Deploy to Dev
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+
+env:
+  PYTHON_VERSION: '3.11'
+  TERRAFORM_VERSION: '1.7.0'
+  AWS_REGION: 'af-south-1'
+  ENVIRONMENT: 'dev'
+
+# Only one deployment at a time
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ─── Job 1: Terraform Apply ──────────────────────────────────────────
+  terraform-deploy:
+    name: 🏗️ Terraform Apply
+    runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      s3_bucket_landing: ${{ steps.outputs.outputs.s3_bucket_landing }}
+      s3_bucket_bronze: ${{ steps.outputs.outputs.s3_bucket_bronze }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/dev
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var="environment=${{ env.ENVIRONMENT }}" \
+            -no-color 2>&1 | tee apply_output.txt
+
+      - name: Extract Terraform outputs
+        id: outputs
+        working-directory: terraform/environments/dev
+        run: |
+          echo "s3_bucket_landing=$(terraform output -raw s3_bucket_landing)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_bronze=$(terraform output -raw s3_bucket_bronze)" >> $GITHUB_OUTPUT
+
+  # ─── Job 2: Databricks Notebook Sync ─────────────────────────────────
+  databricks-sync:
+    name: 📓 Sync Notebooks
+    runs-on: ubuntu-latest
+    needs: terraform-deploy
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Databricks CLI
+        run: pip install databricks-cli
+
+      - name: Configure Databricks CLI
+        run: |
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = ${{ secrets.DATABRICKS_HOST }}
+          token = ${{ secrets.DATABRICKS_TOKEN }}
+          EOF
+
+      - name: Sync Databricks Repo
+        run: |
+          REPO_PATH="/Repos/financial-data-platform"
+
+          # Check if repo exists
+          if databricks repos get --path "$REPO_PATH" 2>/dev/null; then
+            echo "→ Updating existing repo..."
+            databricks repos update --path "$REPO_PATH" --branch "main"
+          else
+            echo "→ Creating new repo..."
+            databricks repos create \
+              --url "https://github.com/Khethu188/financial-data-platform" \
+              --provider "gitHub" \
+              --path "$REPO_PATH"
+          fi
+
+          echo "✓ Notebooks synced to Databricks"
+
+  # ─── Job 3: Deploy Databricks Workflows ──────────────────────────────
+  deploy-workflows:
+    name: ⚙️ Deploy Workflows
+    runs-on: ubuntu-latest
+    needs: databricks-sync
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Databricks CLI
+        run: pip install databricks-cli
+
+      - name: Configure Databricks CLI
+        run: |
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = ${{ secrets.DATABRICKS_HOST }}
+          token = ${{ secrets.DATABRICKS_TOKEN }}
+          EOF
+
+      - name: Deploy workflow definitions
+        run: |
+          echo "Deploying Databricks Workflows..."
+
+          for job_file in databricks/workflows/*.json; do
+            if [[ -f "$job_file" ]]; then
+              job_name=$(python3 -c "import json; print(json.load(open('$job_file'))['name'])")
+              echo "→ Processing: ${job_name}"
+
+              # Check if job exists
+              existing_id=$(databricks jobs list --output JSON | \
+                python3 -c "
+          import json, sys
+          jobs = json.load(sys.stdin).get('jobs', [])
+          for j in jobs:
+              if j['settings']['name'] == '${job_name}':
+                  print(j['job_id'])
+                  break
+          " 2>/dev/null || echo "")
+
+              if [[ -n "$existing_id" ]]; then
+                databricks jobs reset --job-id "$existing_id" --json-file "$job_file"
+                echo "  ✓ Updated (ID: ${existing_id})"
+              else
+                new_id=$(databricks jobs create --json-file "$job_file" | \
+                  python3 -c "import json, sys; print(json.load(sys.stdin)['job_id'])")
+                echo "  ✓ Created (ID: ${new_id})"
+              fi
+            fi
+          done
+
+  # ─── Job 4: Smoke Tests ──────────────────────────────────────────────
+  smoke-tests:
+    name: 🔥 Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-workflows
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install databricks-cli boto3 requests
+
+      - name: Configure credentials
+        run: |
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = ${{ secrets.DATABRICKS_HOST }}
+          token = ${{ secrets.DATABRICKS_TOKEN }}
+          EOF
+
+      - name: Verify Databricks connectivity
+        run: |
+          python3 << 'EOF'
+          import requests
+          import os
+
+          host = "${{ secrets.DATABRICKS_HOST }}"
+          token = "${{ secrets.DATABRICKS_TOKEN }}"
+
+          response = requests.get(
+              f"https://{host}/api/2.0/clusters/list",
+              headers={"Authorization": f"Bearer {token}"}
+          )
+
+          if response.status_code == 200:
+              clusters = response.json().get("clusters", [])
+              print(f"✅ Databricks connected — {len(clusters)} clusters found")
+          else:
+              print(f"❌ Databricks connection failed: {response.status_code}")
+              exit(1)
+          EOF
+
+      - name: Verify S3 buckets exist
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        run: |
+          python3 << 'EOF'
+          import boto3
+
+          s3 = boto3.client("s3")
+          expected_buckets = [
+              "financial-data-platform-dev-landing",
+              "financial-data-platform-dev-bronze",
+              "financial-data-platform-dev-silver",
+              "financial-data-platform-dev-gold",
+          ]
+
+          for bucket in expected_buckets:
+              try:
+                  s3.head_bucket(Bucket=bucket)
+                  print(f"  ✅ {bucket}")
+              except Exception as e:
+                  print(f"  ❌ {bucket}: {e}")
+                  exit(1)
+
+          print(f"\n✅ All {len(expected_buckets)} S3 buckets verified")
+          EOF
+
+      - name: Verify Databricks workflows exist
+        run: |
+          python3 << 'EOF'
+          import requests
+
+          host = "${{ secrets.DATABRICKS_HOST }}"
+          token = "${{ secrets.DATABRICKS_TOKEN }}"
+
+          response = requests.get(
+              f"https://{host}/api/2.1/jobs/list",
+              headers={"Authorization": f"Bearer {token}"}
+          )
+
+          jobs = response.json().get("jobs", [])
+          expected_jobs = [
+              "fdp-daily-pipeline",
+              "fdp-weekly-quarantine-reprocessing",
+              "fdp-weekly-maintenance",
+          ]
+
+          found = []
+          for job in jobs:
+              name = job["settings"]["name"]
+              if name in expected_jobs:
+                  found.append(name)
+                  print(f"  ✅ {name} (ID: {job['job_id']})")
+
+          missing = set(expected_jobs) - set(found)
+          if missing:
+              print(f"\n❌ Missing workflows: {missing}")
+              exit(1)
+
+          print(f"\n✅ All {len(expected_jobs)} workflows verified")
+          EOF
+
+  # ─── Job 5: Deployment Summary ───────────────────────────────────────
+  deploy-summary:
+    name: 📋 Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [terraform-deploy, databricks-sync, deploy-workflows, smoke-tests]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "============================================================"
+          echo "  📋 DEPLOYMENT SUMMARY"
+          echo "============================================================"
+          echo "  Environment    : ${{ env.ENVIRONMENT }}"
+          echo "  Branch         : ${{ github.ref_name }}"
+          echo "  Commit         : ${{ github.sha }}"
+          echo "  Actor          : ${{ github.actor }}"
+          echo "  ──────────────────────────────────────────────────────"
+          echo "  Terraform      : ${{ needs.terraform-deploy.result }}"
+          echo "  Notebook Sync  : ${{ needs.databricks-sync.result }}"
+          echo "  Workflow Deploy : ${{ needs.deploy-workflows.result }}"
+          echo "  Smoke Tests    : ${{ needs.smoke-tests.result }}"
+          echo "============================================================"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed — check logs above"
+          # In production, send SNS/Slack notification here
+

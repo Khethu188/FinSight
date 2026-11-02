@@ -1,0 +1,107 @@
+
+{
+  "name": "fdp-weekly-quarantine-reprocessing",
+  "description": "Financial Data Platform — Weekly Quarantine Recovery & Reprocessing",
+  "tags": {
+    "project": "financial-data-platform",
+    "environment": "dev",
+    "pipeline_type": "reprocessing"
+  },
+  "schedule": {
+    "quartz_cron_expression": "0 0 2 ? * SUN",
+    "timezone_id": "Africa/Johannesburg",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 3600,
+  "email_notifications": {
+    "on_success": ["khethukuthula@example.com"],
+    "on_failure": ["khethukuthula@example.com"]
+  },
+  "job_clusters": [
+    {
+      "job_cluster_key": "reprocessing_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "m5.xlarge",
+        "num_workers": 2,
+        "aws_attributes": {
+          "availability": "SPOT",
+          "spot_bid_price_percent": 100
+        },
+        "spark_conf": {
+          "spark.databricks.delta.optimizeWrite.enabled": "true",
+          "spark.databricks.delta.autoCompact.enabled": "true"
+        },
+        "custom_tags": {
+          "Project": "financial-data-platform",
+          "JobType": "reprocessing"
+        },
+        "autotermination_minutes": 15,
+        "enable_elastic_disk": true,
+        "data_security_mode": "SINGLE_USER"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "quarantine_reprocessor",
+      "description": "Attempt to recover quarantined records with fix-up rules",
+      "job_cluster_key": "reprocessing_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/quality/10_quarantine_reprocessor",
+        "base_parameters": {
+          "dry_run": "false"
+        },
+        "source": "GIT"
+      },
+      "timeout_seconds": 1800,
+      "max_retries": 1
+    },
+    {
+      "task_key": "post_recovery_quality_check",
+      "description": "Re-run quality checks after quarantine recovery",
+      "depends_on": [
+        {"task_key": "quarantine_reprocessor"}
+      ],
+      "job_cluster_key": "reprocessing_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/quality/08_data_quality_monitor",
+        "source": "GIT"
+      },
+      "timeout_seconds": 900,
+      "max_retries": 1
+    },
+    {
+      "task_key": "refresh_gold_tables",
+      "description": "Rebuild Gold aggregates with recovered records",
+      "depends_on": [
+        {"task_key": "quarantine_reprocessor"}
+      ],
+      "run_if": "ALL_SUCCESS",
+      "job_cluster_key": "reprocessing_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/gold/04_gold_revenue_summary",
+        "source": "GIT"
+      },
+      "timeout_seconds": 1200,
+      "max_retries": 1
+    },
+    {
+      "task_key": "recovery_alerting",
+      "description": "Send recovery summary notification",
+      "depends_on": [
+        {"task_key": "post_recovery_quality_check"},
+        {"task_key": "refresh_gold_tables"}
+      ],
+      "job_cluster_key": "reprocessing_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/observability/12_alerting_framework",
+        "source": "GIT"
+      },
+      "timeout_seconds": 300,
+      "max_retries": 1
+    }
+  ]
+}
+

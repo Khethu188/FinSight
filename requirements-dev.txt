@@ -1,0 +1,25 @@
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Development Dependencies — Financial Data Platform
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Testing
+pytest>=8.0.0,<9.0.0
+pytest-cov>=4.1.0,<6.0.0
+pytest-mock>=3.12.0,<4.0.0
+pytest-xdist>=3.5.0,<4.0.0
+moto[s3]>=5.0.0,<6.0.0
+
+# Linting & Formatting
+ruff>=0.2.0,<1.0.0
+black>=24.1.0,<25.0.0
+isort>=5.13.0,<6.0.0
+mypy>=1.8.0,<2.0.0
+
+# Security
+bandit>=1.7.0,<2.0.0
+pip-audit>=2.7.0,<3.0.0
+
+# Pre-commit
+pre-commit>=3.6.0,<4.0.0
+

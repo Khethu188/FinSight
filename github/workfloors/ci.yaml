@@ -1,0 +1,270 @@
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CI Pipeline — Financial Data Platform
+# ═══════════════════════════════════════════════════════════════════════════
+# Triggers: Push to feature branches, Pull Requests to main
+# Steps: Lint, Format, Unit Tests, Terraform Plan, Security Scan
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: CI — Lint, Test & Validate
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'fix/**'
+      - 'refactor/**'
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+env:
+  PYTHON_VERSION: '3.11'
+  TERRAFORM_VERSION: '1.7.0'
+  AWS_REGION: 'af-south-1'
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Job 1: Code Quality ──────────────────────────────────────────────
+  lint-and-format:
+    name: 🔍 Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          pip install ruff black isort mypy
+
+      - name: Run Ruff (linter)
+        run: |
+          ruff check . --output-format=github
+
+      - name: Run Black (formatter check)
+        run: |
+          black --check --diff .
+
+      - name: Run isort (import sorting check)
+        run: |
+          isort --check-only --diff .
+
+      - name: Run mypy (type checking)
+        run: |
+          mypy scripts/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true
+
+  # ─── Job 2: Unit Tests ────────────────────────────────────────────────
+  unit-tests:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-format
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ \
+            --verbose \
+            --tb=short \
+            --cov=scripts \
+            --cov=databricks \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --junitxml=test-results.xml \
+            -x  # Stop on first failure
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+
+      - name: Check coverage threshold
+        run: |
+          coverage_pct=$(python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          root = tree.getroot()
+          print(root.attrib.get('line-rate', '0'))
+          ")
+          echo "Coverage: ${coverage_pct}"
+          python -c "
+          rate = float('${coverage_pct}')
+          if rate < 0.70:
+              print(f'❌ Coverage {rate:.1%} is below 70% threshold')
+              exit(1)
+          else:
+              print(f'✅ Coverage {rate:.1%} meets 70% threshold')
+          "
+
+  # ─── Job 3: Terraform Validation ─────────────────────────────────────
+  terraform-plan:
+    name: 🏗️ Terraform Plan
+    runs-on: ubuntu-latest
+    needs: lint-and-format
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive ../../
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform init
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+
+      - name: Comment PR with Terraform Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.substring(0, 60000) + '\n... (truncated)' : plan;
+
+            const body = `## 🏗️ Terraform Plan
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+            *Pushed by: @${{ github.actor }}*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # ─── Job 4: Security Scan ────────────────────────────────────────────
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: lint-and-format
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install security tools
+        run: |
+          pip install bandit safety pip-audit
+
+      - name: Run Bandit (Python security linter)
+        run: |
+          bandit -r scripts/ databricks/ -f json -o bandit-report.json || true
+          bandit -r scripts/ databricks/ -ll  # Show medium+ issues
+
+      - name: Run pip-audit (dependency vulnerabilities)
+        run: |
+          pip install -r requirements.txt
+          pip-audit --format=json --output=audit-report.json || true
+          pip-audit  # Show results
+
+      - name: Check for secrets in code
+        run: |
+          # Simple grep-based secret detection
+          echo "Scanning for potential secrets..."
+          if grep -rn --include="*.py" --include="*.tf" --include="*.json" \
+            -E "(AKIA[0-9A-Z]{16}|password\s*=\s*['\"][^'\"]+['\"]|secret_key\s*=\s*['\"][^'\"]+['\"])" \
+            . --exclude-dir=.git --exclude-dir=.terraform; then
+            echo "❌ Potential secrets found in code!"
+            exit 1
+          else
+            echo "✅ No secrets detected"
+          fi
+
+      - name: Terraform security scan (tfsec)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform/
+          soft_fail: true
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            audit-report.json
+
+  # ─── Job 5: CI Summary ───────────────────────────────────────────────
+  ci-summary:
+    name: ✅ CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, unit-tests, terraform-plan, security-scan]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "============================================================"
+          echo "  CI Pipeline Summary"
+          echo "============================================================"
+          echo "  Lint & Format  : ${{ needs.lint-and-format.result }}"
+          echo "  Unit Tests     : ${{ needs.unit-tests.result }}"
+          echo "  Terraform Plan : ${{ needs.terraform-plan.result }}"
+          echo "  Security Scan  : ${{ needs.security-scan.result }}"
+          echo "============================================================"
+
+          if [[ "${{ needs.unit-tests.result }}" == "failure" ]] || \
+             [[ "${{ needs.lint-and-format.result }}" == "failure" ]]; then
+            echo "❌ CI Failed — fix issues before merging"
+            exit 1
+          fi
+
+          echo "✅ CI Passed — ready for review"
+

@@ -1,0 +1,43 @@
+
+{
+  "name": "Financial Data Platform",
+  "dataColors": [
+    "#2E86AB",
+    "#F18F01",
+    "#44BBA4",
+    "#A23B72",
+    "#C73E1D",
+    "#3B1F2B",
+    "#FFB347",
+    "#6B4226",
+    "#87CEEB",
+    "#DDA0DD"
+  ],
+  "background": "#FFFFFF",
+  "foreground": "#1B2838",
+  "tableAccent": "#2E86AB",
+  "good": "#44BBA4",
+  "neutral": "#F18F01",
+  "bad": "#C73E1D",
+  "maximum": "#2E86AB",
+  "center": "#F18F01",
+  "minimum": "#C73E1D",
+  "textClasses": {
+    "callout": {
+      "fontSize": 28,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#1B2838"
+    },
+    "title": {
+      "fontSize": 14,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#1B2838"
+    },
+    "header": {
+      "fontSize": 12,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#1B2838"
+    },
+    "label": {
+      "fontSize": 10,
+      "fontFace

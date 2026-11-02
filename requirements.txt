@@ -1,0 +1,26 @@
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Production Dependencies — Financial Data Platform
+# ═══════════════════════════════════════════════════════════════════════════
+
+# AWS SDK
+boto3>=1.34.0,<2.0.0
+botocore>=1.34.0,<2.0.0
+
+# Data Processing (local scripts)
+pandas>=2.1.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+
+# Data Generation
+faker>=22.0.0,<30.0.0
+
+# Configuration
+python-dotenv>=1.0.0,<2.0.0
+pyyaml>=6.0.0,<7.0.0
+
+# Databricks CLI
+databricks-cli>=0.18.0
+
+# Logging
+structlog>=24.1.0,<25.0.0
+

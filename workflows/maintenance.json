@@ -1,0 +1,53 @@
+
+{
+  "name": "fdp-weekly-maintenance",
+  "description": "Financial Data Platform — Weekly Delta Table Optimization & Cleanup",
+  "tags": {
+    "project": "financial-data-platform",
+    "pipeline_type": "maintenance"
+  },
+  "schedule": {
+    "quartz_cron_expression": "0 0 3 ? * SAT",
+    "timezone_id": "Africa/Johannesburg",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 3600,
+  "email_notifications": {
+    "on_failure": ["khethukuthula@example.com"]
+  },
+  "job_clusters": [
+    {
+      "job_cluster_key": "maintenance_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "m5.xlarge",
+        "num_workers": 2,
+        "aws_attributes": {
+          "availability": "SPOT"
+        },
+        "custom_tags": {
+          "Project": "financial-data-platform",
+          "JobType": "maintenance"
+        },
+        "autotermination_minutes": 15,
+        "enable_elastic_disk": true,
+        "data_security_mode": "SINGLE_USER"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "optimize_delta_tables",
+      "description": "OPTIMIZE and VACUUM all Delta tables",
+      "job_cluster_key": "maintenance_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/financial-data-platform/databricks/notebooks/maintenance/optimize_tables",
+        "source": "GIT"
+      },
+      "timeout_seconds": 2400,
+      "max_retries": 1
+    }
+  ]
+}
+

@@ -1,0 +1,93 @@
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Python Project Configuration — Financial Data Platform
+# ═══════════════════════════════════════════════════════════════════════════
+
+[project]
+name = "financial-data-platform"
+version = "1.0.0"
+description = "End-to-end financial data platform with Medallion Architecture on AWS + Databricks"
+authors = [
+    { name = "Khethukuthula Sabela", email = "Khethukuthula.sabela@outlook.com" }
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["scripts", "databricks", "config"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "S101",  # assert used (OK in tests)
+    "S603",  # subprocess call
+    "S607",  # partial executable path
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "unit: Unit tests (fast, no external dependencies)",
+    "integration: Integration tests (require AWS/Databricks)",
+    "slow: Slow tests (data generation, large datasets)",
+]
+
+[tool.coverage.run]
+source = ["scripts", "databricks"]
+omit = [
+    "tests/*",
+    "**/__pycache__/*",
+    "**/conftest.py",
+]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+

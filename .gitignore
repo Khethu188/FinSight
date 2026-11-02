@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+*.env
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+
+# Test / Coverage
+.coverage
+coverage.xml
+test-results.xml
+htmlcov/
+.pytest_cache/
+
+# Data
+data/generated/*.csv
+
+# Secrets
+.secrets.baseline
